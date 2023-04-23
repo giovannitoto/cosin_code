@@ -1,0 +1,1 @@
+COSIN estimated on synthetic data sets (scenario 1)
