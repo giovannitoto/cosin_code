@@ -33,7 +33,7 @@ get_output <- function(lambda, eta, wB, hyper, na_prop) {
   }
   # output
   output <- list("k" = k, "lambda" = lambda, "eta" = eta, "C" = C_list,
-                 "Y" = y, "Y_na" = y_na, "wB" = wB, "hyperparameters" = hyper)
+                 "y" = y, "y_na" = y_na, "wB" = wB, "hyperparameters" = hyper)
   return(output)
 }
 
@@ -141,34 +141,32 @@ foreach(i = 1:nrow(sim_list), .combine = 'rbind', .inorder = FALSE) %dopar% {
   saveRDS(sim, file.path(FOLDER, sim_file))
   # -------------------------------------------------------------------------- #
   # Adaptive Gibbs Sampler without meta-covariates
-  out_MCMC <- GGIF::AGS_SIS(Y = sim$Y_na, y_max = sim$hyperparameters$y_max,
-                            X_mean = NULL, X_cov = NULL, W = NULL,
-                            seed = 28, stdx = TRUE, stdw = TRUE,
-                            kinit = NULL, kmax = NULL, kval = 4,
-                            nrun = 20000, thin = 2, start_adapt = 100,
-                            b0 = 1, b1 = 5*10^(-4),
-                            sd_b = 1, sd_mu = 1, sd_beta = 1,
-                            a_theta = 1, b_theta = 1,
-                            as = 1, bs = 1,
-                            p_constant = 0.5,
-                            alpha = alpha, output = c("eta", "lambda"),
-                            verbose = FALSE)
+  out_MCMC <- cosin::cosin(y = sim$y_na, wT = NULL, wB = NULL, x = NULL,
+                           y_max = sim$hyperparameters$y_max,
+                           stdwT = TRUE, stdwB = TRUE, stdx = TRUE,
+                           sd_gammaT = 1, sd_gammaB = 1, sd_beta = 1,
+                           a_theta = 1, b_theta = 1, a_sigma = 1, b_sigma = 1,
+                           alpha = alpha, p_constant = 0.5,
+                           kinit = NULL, kmax = NULL, kval = 4,
+                           nrun = 20000, thin = 2,
+                           start_adapt = 100, b0 = 1, b1 = 5*10^(-4),
+                           seed = 28, output = c("eta", "lambda"),
+                           verbose = FALSE)
   saveRDS(out_MCMC, file.path(FOLDER, "results", paste0("s",s), paste0("res_nometa_", sim_file)))
   # -------------------------------------------------------------------------- #
   if(!is.null(sim$wB)) {
     # Adaptive Gibbs Sampler with meta-covariates
-    out_MCMC <- GGIF::AGS_SIS(Y = sim$Y_na, y_max = sim$hyperparameters$y_max,
-                              X_mean = NULL, X_cov = sim$X_cov, W = NULL,
-                              seed = 28, stdx = TRUE, stdw = TRUE,
-                              kinit = NULL, kmax = NULL, kval = 4,
-                              nrun = 20000, thin = 2, start_adapt = 100,
-                              b0 = 1, b1 = 5*10^(-4),
-                              sd_b = 1, sd_mu = 1, sd_beta = 1,
-                              a_theta = 1, b_theta = 1,
-                              as = 1, bs = 1,
-                              p_constant = 0.5,
-                              alpha = alpha, output = c("eta", "lambda"),
-                              verbose = FALSE)
+    out_MCMC <- cosin::cosin(y = sim$y_na, wT = NULL, wB = sim$wB, x = NULL,
+                             y_max = sim$hyperparameters$y_max,
+                             stdwT = TRUE, stdwB = TRUE, stdx = TRUE,
+                             sd_gammaT = 1, sd_gammaB = 1, sd_beta = 1,
+                             a_theta = 1, b_theta = 1, a_sigma = 1, b_sigma = 1,
+                             alpha = alpha, p_constant = 0.5,
+                             kinit = NULL, kmax = NULL, kval = 4,
+                             nrun = 20000, thin = 2,
+                             start_adapt = 100, b0 = 1, b1 = 5*10^(-4),
+                             seed = 28, output = c("eta", "lambda"),
+                             verbose = FALSE)
     saveRDS(out_MCMC, file.path(FOLDER, "results", paste0("s",s), paste0("res_meta_", sim_file)))
   }
   # -------------------------------------------------------------------------- #
