@@ -1,0 +1,256 @@
+---
+title: "Structured factorization for single-cell gene expression data: simulations"
+author: Antonio Canale, Luisa Galtarossa, Davide Risso, Lorenzo Schiavon, Giovanni
+  Toto
+date: "Last modified: June 07, 2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This vignette contains the code developed and used for computing the aggregated evaluation metrics of the simulation study.
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+```
+
+## Introduction
+
+To generate the matrix of gene expression, we consider the zero mean data generating process defined as
+
+$$
+y_{ij} = \lfloor \exp(z_{ij}) \rfloor, \quad  z_{ij} = \sum_h C_{hij} + \varepsilon_{ij}, \quad \varepsilon_{ij} \sim N(0,\sigma^2).
+$$
+
+To illustrate the validity and generality of `COSIN`, we consider three scenarios in which $\eta$ and $\lambda$ have different sparsity structures. In particular,
+
+```{=tex}
+\begin{enumerate}
+  \item in scenario 1 we consider two rank-one contributions which induce two groups of genes:
+  \begin{align*}
+      \eta_{\cdot1}, \eta_{\cdot2} &\sim N_n(0,I_n), \quad \lambda_{\cdot1} \sim N_p(0,I_p), \\
+      \lambda_{j2} &=0, \quad j > p/2,  \quad \lambda_{m2}=1, \quad m \leq p/2;
+  \end{align*}
+  \item in scenario 2 we consider two rank-one contributions which induce two groups of cells:
+  \begin{align*}
+      \lambda_{\cdot1}, \lambda_{\cdot2} &\sim N_p(0,I_p), \quad \eta_{\cdot1} \sim N_n(0,I_n), \\
+      \eta_{i2} &\sim N(0,0.05^2), \quad i> n/2,  \quad \eta_{l2}=1, \quad l \leq n/2;
+  \end{align*}
+  \item in scenario 3 we consider three rank-one contributions which induce both two groups of cell and two groups of genes:
+  \begin{align*}
+      \eta_{\cdot1}, \eta_{\cdot 3} &\sim N_n(0,I_n), \quad \lambda_{\cdot1}, \lambda_{\cdot2} \sim N_p(0,I_p),\\
+      \eta_{i2} &\sim N(0,0.05^2), \quad i> n/2,  \quad \eta_{l2}=1, \quad l \leq n/2,\\
+      \lambda_{j3} &\sim N_p(0,0.05^2), \quad j> p/2,  \quad \lambda_{m3}=1, \quad m \leq p/2.
+  \end{align*}
+\end{enumerate}
+```
+
+In the next sections we show how to load matrices, compute the aggregated evaluation metrics and explore the results.
+We report here only the steps related to the third scenario since it is the only one reported in the paper.
+The steps for the other two scenarios are the same.
+
+
+## Load tables
+
+We load the tables containing the evaluating metrics related to `COSIN`:
+
+```{r}
+# # assigning names to columns (scenario 1)
+# colnames_s1 <- c("n", "p", "sigma", "s", "r", "RMSE_1", "RMSE_2", "RMSE_tot",
+#                  "F1_1", "F1_2", "F1_tot", "MAD_Y", "MAE_Y", "RMSE_el",
+#                  "kstar", "sd_1", "sd_2", "sd_tot", "meta")
+# # assigning names to columns (scenario 2)
+# colnames_s2 <- c("n", "p", "sigma", "s", "r", "RMSE_1", "RMSE_2", "RMSE_tot",
+#                  "MAD_Y", "MAE_Y", "RMSE_el", "kstar", "sd_1", "sd_2", "sd_tot", "meta")
+metrics_s3 <- rbind(readRDS("simulations/metrics/table_metrics_meta_NA_p100_s3.RDS"),
+                    readRDS("simulations/metrics/table_metrics_nometa_NA_p100_s3.RDS"),
+                    readRDS("simulations/metrics/table_metrics_meta_NA_p1000_s3.RDS"),
+                    readRDS("simulations/metrics/table_metrics_nometa_NA_p1000_s3.RDS"))
+metrics_s3_woNA <- rbind(readRDS("simulations/metrics/table_metrics_meta_woNA_p100_s3.RDS"),
+                         readRDS("simulations/metrics/table_metrics_nometa_woNA_p100_s3.RDS"),
+                         readRDS("simulations/metrics/table_metrics_meta_woNA_p1000_s3.RDS"),
+                         readRDS("simulations/metrics/table_metrics_nometa_woNA_p1000_s3.RDS"))
+# assigning names to columns
+colnames_s3 <- c("n", "p", "sigma", "s", "r", "RMSE_1", "RMSE_2",
+                 "RMSE_3", "RMSE_tot", "MAD_Y", "MAE_Y", "RMSE_el",
+                 "kstar", "sd_1", "sd_2", "sd_3", "sd_tot", "meta")
+colnames(metrics_s3) <- colnames(metrics_s3_woNA) <- colnames_s3
+```
+
+We load the tables containing the evaluating metrics related to `GLM-PCA`:
+
+```{r}
+# # assigning names to columns (scenario 1)
+# colnames_glmpca_s1 <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
+#                         "MAE", "RMSE_1", "RMSE_2", "RMSE_tot",
+#                         "rmse_etaLambda", "meta")
+# # assigning names to columns (scenario 2)
+# colnames(metrics_glmpca_s2) <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
+#                                  "MAE", "RMSE_1", "RMSE_2", "RMSE_tot",
+#                                  "rmse_etaLambda", "meta")
+metrics_glmpca_s3 <- readRDS("simulations/glmpca/table_metrics_nometa_glmpca_s3.RDS")
+metrics_glmpca_s3_meta <- readRDS("simulations/glmpca/table_metrics_meta_glmpca_s3.RDS")
+colnames_glmpca_s3 <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
+                        "MAE", "RMSE_1", "RMSE_2", "RMSE_3", "RMSE_tot",
+                        "rmse_etaLambda", "meta")
+colnames(metrics_glmpca_s3) <- colnames(metrics_glmpca_s3_meta) <- colnames_glmpca_s3
+```
+
+## Aggregate metrics
+
+First, we aggregate the evaluation metrics related to `COSIN` applied to data sets with and without NAs:
+
+```{r}
+# with NAs
+metrics_s3 <- as.data.frame(metrics_s3)
+metrics_s3$s <- NULL
+metrics_s3$r <- NULL
+# aggregating metrics
+metrics_s3 <- metrics_s3 %>% group_by(n, p, meta, sigma) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# ordering columns
+metrics_s3 <- metrics_s3[, c(1:4, rbind(5:16, 5:16+12))]
+# changing colnames
+colnames(metrics_s3) <- colnames(metrics_s3) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
+
+# without NAs
+metrics_s3_woNA <- as.data.frame(metrics_s3_woNA)
+metrics_s3_woNA$s <- NULL
+metrics_s3_woNA$r <- NULL
+# filtering columns
+metrics_s3_woNA <- metrics_s3_woNA[, c(1:3,4:6,16)]
+# aggregating metrics
+metrics_s3_woNA <- metrics_s3_woNA %>% group_by(n, p, meta, sigma) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+```
+
+Then, we aggregate the evaluation metrics related to `GLM-PCA` with meta-covariate applied to data sets without NAs:
+
+```{r}
+metrics_glmpca_s3_meta <- as.data.frame(metrics_glmpca_s3_meta)
+metrics_glmpca_s3_meta$r <- NULL
+# aggregating metrics
+metrics_glmpca_s3_meta <- metrics_glmpca_s3_meta %>% group_by(n, p, meta, sigma) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+```
+
+Finally, we aggregate the evaluation metrics related to `GLM-PCA` without meta-covariate applied to both kinds of data set:
+
+```{r}
+metrics_glmpca_s3 <- as.data.frame(metrics_glmpca_s3)
+metrics_glmpca_s3$r <- NULL
+# aggregating metrics
+metrics_glmpca_s3 <- metrics_glmpca_s3 %>% group_by(n, p, meta, sigma) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+```
+
+### Contribution RMSE computed on data sets without NAs
+
+Median of contribution RMSE in 50 replicates, with varying $(n,p,\sigma)$. Interquartile range is also reported.
+
+```{r}
+# COSIN
+round(metrics_s3_woNA, 2)
+# GLM-PCA with meta-covariates
+round(metrics_glmpca_s3_meta[,c(1:4,8:10,16:18)], 2)
+# GLM-PCA without meta-covariates
+round(metrics_glmpca_s3[,c(1:4,8:10,16:18)], 2)
+```
+
+### Out-of-sample MAE computed on data sets with NAs
+
+Median of out-of-sample MAE in 50 replicates, with varying $(n,p,\sigma)$. Interquartile range is also reported.
+
+```{r}
+# COSIN
+round(metrics_s3[,c(1:4,15:16)], 4)
+# GLM-PCA without meta-covariates
+round(metrics_glmpca_s3[,c(1:4,6,14)], 4)
+```
+
+## Boxplot of the out-of-sample MAE computed on data sets with NAs
+
+Boxplot of the out-of-sample MAE of the competing models under different values of $(n,p)$ with $\sigma^2=1$:
+
+
+```{r}
+metrics <- rbind(readRDS("simulations/metrics/table_metrics_meta_NA_p100_s3.RDS"),
+                 readRDS("simulations/metrics/table_metrics_nometa_NA_p100_s3.RDS"),
+                 readRDS("simulations/metrics/table_metrics_meta_NA_p1000_s3.RDS"),
+                 readRDS("simulations/metrics/table_metrics_nometa_NA_p1000_s3.RDS"))
+colnames(metrics) <- c("n", "p", "sigma", "s", "r", "RMSE_1", "RMSE_2",
+                       "RMSE_3", "RMSE_tot", "MAD_Y", "MAE_Y", "RMSE_el",
+                       "kstar", "sd_1", "sd_2", "sd_3", "sd_tot", "meta")
+metrics <- as.data.frame(metrics)
+metrics$n_p_sigma_s <- paste(metrics$n, metrics$p, metrics$sigma, metrics$s, sep="_")
+metrics <- metrics[, c("meta", "n_p_sigma_s", "r", "MAE_Y")]
+
+metrics_glmpca <- readRDS("simulations/metrics/table_metrics_nometa_glmpca_s3.RDS")
+colnames(metrics_glmpca) <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
+                              "MAE", "RMSE_1", "RMSE_2", "RMSE_3", "RMSE_tot",
+                              "rmse_etaLambda", "meta")
+metrics_glmpca <- as.data.frame(metrics_glmpca)
+metrics_glmpca$n_p_sigma_s <- paste(metrics_glmpca$n, metrics_glmpca$p, metrics_glmpca$sigma, 3, sep="_")
+metrics_glmpca <- metrics_glmpca[, c("meta", "n_p_sigma_s", "r", "MAE_a")]
+
+
+scenario_list <- c("50_100_1_3", "200_100_1_3", "200_1000_1_3")
+
+datatoplot_list <- list()
+for(scenario in scenario_list) {
+  datatoplot_list[[scenario]] <- cbind(metrics[metrics$meta==0 & metrics$n_p_sigma_s==scenario,"MAE_Y"],
+                                       metrics[metrics$meta==1 & metrics$n_p_sigma_s==scenario,"MAE_Y"],
+                                       metrics_glmpca[metrics_glmpca$n_p_sigma_s==scenario,"MAE_a"])
+}
+
+scenario_titles <- list("50_100_1_3" = "(n,p) = (50,100)",
+                        "200_100_1_3" = "(n,p) =  (200,100)",
+                        "200_1000_1_3" = "(n,p) = (200, 1000)")
+
+unipdred <- scales::alpha("#9B0014", 0.9)
+mybeige <- scales::alpha("#e1cd9d", 0.9)
+mygrey <- scales::alpha("#5e5a55", 0.9) 
+
+par(mfrow=c(1,3), mar=c(3,4.5,3,0), xpd = FALSE)
+for(scenario in scenario_list) {
+  # 50x3 data set in which each column contains MAE of the 50 simulations computed by a model
+  datatoplot <- as.data.frame(datatoplot_list[[scenario]])
+  # plot settings
+  if(scenario == "50_100_1_3"){
+    plot(1, 1, pch = "", xlim = c(0.2,3.8), ylim = c(0, 17.5),
+         axes = FALSE, xlab = "", ylab="MAE", cex.lab=1.5)
+  }else{
+    plot(1, 1, pch = "", xlim = c(0.2,3.8), ylim = c(0, 17.5),
+         axes = FALSE, xlab = "", ylab="")
+  }
+  par(xpd = FALSE)
+  grid(nx = 4, ny = 7)
+  # boxplot
+  par(xpd=T)
+  boxplot(datatoplot,  col = c( mybeige, unipdred, mygrey), 
+          add = TRUE, axes = FALSE, pch = 20)
+  #axis(1, at = c(1, 2, 3), labels = c("COSIN","COSIN2", "GLMPCA"), cex.axis = 1.5, tick = FALSE)
+  axis(2, tick = FALSE, las = 1, cex.axis=1.5)
+  #abline(h = 0, lwd = 2)
+  title(main = scenario_titles[[scenario]], cex.main=1.5, font.main = 1)
+  if(scenario =="200_1000_1_3"){
+     par(xpd=T)
+     legend("bottomright", legend = c("COSIN w/o mc","COSIN mc", "GLM-PCA"),
+            fill = c(mybeige, unipdred, mygrey), cex=1.5, pt.cex = 2,
+            bg = "white", horiz =F, inset = -0.05, bty="n")
+  }
+}
+```
+
+
+
+
+
