@@ -3,7 +3,7 @@ title: "Structured factorization for single-cell gene expression data: analysis 
   lung adenocarcinoma scRNA-seq data"
 author: Antonio Canale, Luisa Galtarossa, Davide Risso, Lorenzo Schiavon, Giovanni
   Toto
-date: "Last modified: June 07, 2023"
+date: "Last modified: March 21, 2025"
 output:
   pdf_document: default
   html_document:
@@ -15,7 +15,7 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-This vignette contains the code developed and used for the analysis of lung adenocarcinoma scRNA-seq data in section 3 of the paper.
+This vignette contains the code developed and used for the analysis of lung adenocarcinoma scRNA-seq data.
 
 ## Introduction
 
@@ -41,11 +41,10 @@ We import four matrices containing lung adenocarcinoma scRNA-seq data:
 -   `x`: cell-specific covariates.
 
 ```{r}
-y <- readRDS("data/observed_data")
-wT <- readRDS("data/metacovariate_mean_data")
-wB <- readRDS("data/metacovariate_cov_data")
-x <- readRDS("data/covariate_data")
-covariate <- readRDS("data/covariate_data")
+y <- readRDS("data/LungAdenocarcinomascRNAseq/observed_data")
+wT <- readRDS("data/LungAdenocarcinomascRNAseq/metacovariate_mean_data")
+wB <- readRDS("data/LungAdenocarcinomascRNAseq/metacovariate_cov_data")
+x <- readRDS("data/LungAdenocarcinomascRNAseq/covariate_data")
 ```
 
 We also define colors for the plots:
@@ -53,7 +52,7 @@ We also define colors for the plots:
 ```{r}
 unipdred <- alpha("#9B0014", 0.9)
 mybeige <- alpha("#e1cd9d", 0.9)
-mygrey <- alpha("#5e5a55", 0.9) 
+mygrey <- alpha("#5e5a55", 0.9)
 myavion <- alpha("lightsteelblue2", 0.9)
 mygreen <- alpha("palegreen3", 0.9)
 mypink <- alpha("thistle3", 0.9)
@@ -83,21 +82,21 @@ We apply `COSIN` to lung adenocarcinoma scRNA-seq data. We run the adaptive Gibb
 #               nrun = 20000, thin = 2,
 #               start_adapt = 100, b0 = 1, b1 = 5*10^(-4),
 #               seed = 123, output = "all", verbose = TRUE)
-# 
+#
 # lpost_mode <- lposterior(out_MCMC = Mcmc)
 # lpost_mean <- posterior_mean(out_MCMC = Mcmc)
 # contribution_means <- contributions(out_MCMC = Mcmc,
 #                                     reference = length(Mcmc$numFactors))
-# 
-# saveRDS(Mcmc, "results/cosin_mcmc.RDS")
-# saveRDS(lpost_mode, "results/lposterior.RDS")
-# saveRDS(lpost_mean, "results/posterior_mean.RDS")
-# saveRDS(contribution_means, "results/cont_postmean_ref.RDS")
+#
+# saveRDS(Mcmc, "results/LungAdenocarcinomascRNAseq/cosin_mcmc.RDS")
+# saveRDS(lpost_mode, "results/LungAdenocarcinomascRNAseq/lposterior.RDS")
+# saveRDS(lpost_mean, "results/LungAdenocarcinomascRNAseq/posterior_mean.RDS")
+# saveRDS(contribution_means, "results/LungAdenocarcinomascRNAseq/cont_postmean_ref.RDS")
 
-Mcmc <- readRDS("results/cosin_mcmc.RDS")
-lpost_mode <- readRDS("results/lposterior.RDS")
-lpost_mean <- readRDS("results/posterior_mean.RDS")
-contribution_means <- readRDS("results/cont_postmean_ref.RDS")
+Mcmc <- readRDS("results/LungAdenocarcinomascRNAseq/cosin_mcmc.RDS")
+lpost_mode <- readRDS("results/LungAdenocarcinomascRNAseq/lposterior.RDS")
+lpost_mean <- readRDS("results/LungAdenocarcinomascRNAseq/posterior_mean.RDS")
+contribution_means <- readRDS("results/LungAdenocarcinomascRNAseq/cont_postmean_ref.RDS")
 ```
 
 ## Post-processing
@@ -122,6 +121,15 @@ data.frame("covariate" = colnames(Mcmc$x),
            "max" = apply(lpost_mean$beta, 2, max),
            "0.9-level" = colSums(sign_coeff))
 ```
+```{r}
+data.frame("covariate" = colnames(Mcmc$x),
+           "min" = round( apply(lpost_mean$beta, 2, min) ,3),
+           "Q0.25" = round( apply(lpost_mean$beta, 2, function(var) quantile(var, 0.25)) ,3),
+           "Q0.50" = round( apply(lpost_mean$beta, 2, function(var) quantile(var, 0.50)) ,3),
+           "Q0.75" = round( apply(lpost_mean$beta, 2, function(var) quantile(var, 0.75)) ,3),
+           "max" = round( apply(lpost_mean$beta, 2, max) ,3),
+           "0.9-level" = colSums(sign_coeff))
+```
 
 The next figure displays the posterior distributions of the $\Gamma_T$ coefficients, illustrating the influence of meta-covariates on the covariate effects.
 
@@ -136,13 +144,13 @@ for(i in 1:ncol(Mcmc$x)) {
   grid(nx = 3, ny = 8)
   datatoplot <- cbind(sapply(Mcmc$gammaT, "[[",2+3*(i-1)),
                       sapply(Mcmc$gammaT, "[[",3+3*(i-1)))
-  boxplot(datatoplot, col =  c(unipdred, mybeige), 
+  boxplot(datatoplot, col =  c(unipdred, mybeige),
           add = TRUE, axes = FALSE, pch = 20)
   axis(2, tick = FALSE, las = 1)
   abline(h = 0, lwd = 2)
   title(main = covariates_names[i])
   if(i == 8) {
-    legend("bottom", legend = c("Length", "GC content"), 
+    legend("bottom", legend = c("Length", "GC content"),
            fill = c(unipdred, mybeige), cex = 1.25, pt.cex = 2,
            bg = "white", horiz = TRUE, inset = -1/10, bty = "n")
   }
@@ -193,7 +201,7 @@ threshold <- 0.025
 pcorr_postmean_cutted <- lpost_mean$omega_pcorr
 colnames(pcorr_postmean_cutted) <- rownames(wB)
 pcorr_postmean_cutted[which(abs(lpost_mean$omega_pcorr)<threshold)] <- 0
-td <- which(rowSums(abs(pcorr_postmean_cutted)>0)==1) 
+td <- which(rowSums(abs(pcorr_postmean_cutted)>0)==1)
 pcorr_postmean_cutted <- pcorr_postmean_cutted[-td,-td]
 
 network <- graph_from_adjacency_matrix(pcorr_postmean_cutted, weighted = TRUE,
@@ -217,14 +225,14 @@ labels[selected_labels] <- colnames(pcorr_postmean_cutted)[selected_labels]
 set.seed(5)
 ggnet2(net, mode = "fruchtermanreingold", size = "freeman", color="pathway",
        #label = labels, size.cut = 5, size.palette = c(),
-       color.palette= c("Multi-pathway" = unipdred, 
+       color.palette= c("Multi-pathway" = unipdred,
                         "Metabolic_pathways" = mygrey,
                         "Coronavirus_disease___COVID_19" = mybeige,
                         "Cell_cycle" = myavion,
                         "Pathways_in_cancer" = mypurple,
                         "MAPK_signaling_pathway" = mygreen,
                         "Proteoglycans_in_cancer" = mypink,
-                        "Salmonella_infection" = grey(0.8,0.9), 
+                        "Salmonella_infection" = grey(0.8,0.9),
                         "Shigellosis" = grey(0.8,0.9),
                         "Tight_junction" = grey(0.8,0.9),
                         "Amyotrophic_lateral_sclerosis" = grey(0.8,0.9),
@@ -235,12 +243,10 @@ ggnet2(net, mode = "fruchtermanreingold", size = "freeman", color="pathway",
                         "PI3K_Akt_signaling_pathway" = grey(0.8,0.9)),
        alpha = 0.75, edge.size = "weights", edge.color = mygrey, edge.alpha = 0.3)+
        geom_text_repel(aes(label = labels), box.padding = 0.1, color="black",
-                       size=2 ,point.padding = 0.1,  segment.color = 'black', 
+                       size=2 ,point.padding = 0.1,  segment.color = 'black',
                        segment.size = 0.1, max.overlaps = 40) +
        theme(legend.position = "none") +
        guides(size = "none")
 ```
 
 **remark:** Figure 3 was generated using this code, however it was modified further for display purposes.
-
-

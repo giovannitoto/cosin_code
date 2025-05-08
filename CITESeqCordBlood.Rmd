@@ -1,0 +1,724 @@
+---
+title: "Structured factorization for single-cell gene expression data: analysis of
+  CITE-Seq Cord Blood data"
+author: Antonio Canale, Luisa Galtarossa, Davide Risso, Lorenzo Schiavon, Giovanni
+  Toto
+date: "Last modified: March 21, 2025"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This vignette contains the code developed and used for the analysis of CITEseq Cord Blood data.
+
+## Introduction
+
+we analyze the coord blood mononuclear cells (CBMCs) CITE-seq dataset. CITE-seq is a multi-modal protocol that allows the simultaneous measurement of gene expression by scRNA-Seq in addition to the expression of several protein surface markers in the same cells.
+We use the data provided in the `SingleCellMultimodal` Bioconductor package, consisting of the expression of 36,280 genes in 7858 cells, along with a cell-type label based on the surface markers, which we consider as ground truth.
+We select the human genes available in the Ensembl database (v. 79) that are annotated as being part of the twenty immune system pathways in the KEGG database or in the remaining four largest pathways. We further remove genes with missing information about length and GC content.
+
+The resulting data consist of a gene expression matrix of $n = 7858$ cells and $p = 2587$ genes.
+Along with this gene expression matrix (`y`), quality control information about the cells (covariates `x`) and the genes (technical metacovariates `wT` and biological metacovariates `wB`) are also available.
+
+Cell type information is available, but not to included as a covariate in the model.
+This decision reflects a common scenario in scRNA-Seq analysis, where cell identities are unknown beforehand.
+As a result, our setup provides a meaningful benchmark for evaluating the model’s ability to infer latent grouping structures in high-dimensional data.
+
+
+
+## Load packages, data, posterior estimates and other stuff
+
+```{r, message=FALSE, warning=FALSE}
+library(fields)
+library(GGally)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(igraph)
+library(mclust)
+library(network)
+library(RColorBrewer)
+library(SummarizedExperiment)
+library(tidyr)
+```
+
+We load the data previously preprocessed in `CITESeqCordBlood_preprocessing.R` and define some useful quantities:
+```{r}
+sce <- readRDS("data/CITESeqCordBlood/CITEseqCordBlood_an.RDS")
+
+celltype <- colData(sce)[,1]
+
+y <- t(as.matrix(counts(sce)))
+wT <- as.data.frame(rowData(sce)[,1:2])
+wB <- as.data.frame(rowData(sce)[,-c(1:2)])
+x <- as.data.frame(colData(sce)[,3:4])
+
+# wB in numeric format
+wB_mat <- matrix(as.numeric(as.matrix(wB)), nrow(wB))
+rownames(wB_mat) <- rownames(wB)
+colnames(wB_mat) <- colnames(wB)
+```
+
+We then load the posterior estimates previously obtained in `CITESeqCordBlood_mcmc.R`:
+```{r}
+beta_gammaT_samples <- readRDS("results/CITESeqCordBlood/CITEseqCordBlood_beta_chain.RDS")
+beta_gammaT_mean <- readRDS("results/CITESeqCordBlood/CITEseqCordBlood_beta_posterior_mean.RDS")
+contribution_means <- readRDS("results/CITESeqCordBlood/CITEseqCordBlood_contributions_mean.RDS")
+lpost_mode <- readRDS("results/CITESeqCordBlood/CITEseqCordBlood_lposterior.RDS")
+pcorr_mean <- readRDS("results/CITESeqCordBlood/CITEseqCordBlood_pcorr_mean.RDS")
+```
+
+We also define colors for the plots:
+```{r}
+#colors
+unipdred <- alpha("#9B0014", 0.9)
+mybeige <- alpha("#e1cd9d", 0.9)
+mygrey <- alpha("#5e5a55", 0.9)
+myavion <- alpha("lightsteelblue2", 0.9)
+mygreen <- alpha("palegreen3", 0.9)
+mypink <- alpha("thistle3", 0.9)
+mypurple <- alpha("mediumpurple3", 0.9)
+mydarkblue <- alpha("dodgerblue4", 0.9)
+mygold <- alpha("#b08b36", 0.9)
+# gradient palette beige - red
+funcColor <- colorRampPalette(c("#b08b36", "white", unipdred))
+```
+
+## Post-processing
+First, we evaluate the convergence of the MCMC chain, looking at the Markov chains evolution of technical metacovariate coefficient parameters $\Gamma_T$
+```{r}
+# Extracting specific elements from each matrix
+par_chains <- lapply(beta_gammaT_samples$gammaT, function(mat) {
+  c(a12 = mat[1,2], a13 = mat[1,3], a32 = mat[3,2], a33 = mat[3,3])  # Selecting four elements
+})
+# Convert list to dataframe
+dfchain2plot <- as.data.frame(do.call(rbind, par_chains))
+dfchain2plot$Iteration <- 1:nrow(dfchain2plot)  
+# Transform data into long format for ggplot
+dfchain_long <- dfchain2plot %>% pivot_longer(cols = -Iteration, names_to = "Parameter", values_to = "Value")
+# ggplot
+ggplot(dfchain_long, aes(x = Iteration, y = Value, color = Parameter)) +
+  geom_line(alpha = 0.8, linewidth = 0.6) +
+  labs(title = expression("Markov chains of " ~ gamma[T] ~ " parameter"),
+       x = "Iteration", y = "Parameter Value",
+       color = "Parameter") +
+  scale_color_manual( values = c("a12" = unipdred, "a13" = mybeige, "a32" = mygrey, "a33" = myavion),  # Custom colors
+    labels = c("a12" = expression(gamma[T12]), "a13" = expression(gamma[T13]),
+               "a32" = expression(gamma[T32]), "a33" = expression(gamma[T33])) )+
+  theme_minimal()+
+  theme( legend.position = "bottom", legend.text = element_text(size = 14),
+         legend.title = element_text(size = 14), axis.title = element_text(size = 14),
+         title = element_text(size = 16))
+```
+and of the log-likelihood.
+```{r}
+# ggplot of lposterior
+d2plot_lpost <- data.frame(Iteration = seq(floor(lpost_mode$iteration_max/250)*250+1,ceiling(lpost_mode$iteration_max/250)*250),
+                           Value = lpost_mode$lposterior)
+ggplot(d2plot_lpost, aes(x = Iteration, y = Value)) +
+ geom_line(alpha = 0.8, linewidth = 1, col = unipdred) +
+ labs(title = "Log Posterior Markov chains around maximum",
+      x = "Iteration", y = "Log posterior") +
+ theme(axis.title = element_text(size = 14), title = element_text(size = 16))+
+ theme_minimal()
+```
+
+We compute credible intervals for mean coefficients and report summaries of $\beta$ coefficients in the table below. The last column illustrates that only a small proportion of $\beta$’s for any covariate has 0.9-level posterior credible intervals not including zero.
+```{r}
+# computing credible intervals for beta coefficients
+npar_beta <- nrow(beta_gammaT_mean$beta) * ncol(beta_gammaT_mean$beta)
+Q.mat <- matrix(NA, npar_beta , 2)
+for(i in 1:(npar_beta)) {
+  Q.mat[i,] <- quantile(sapply(beta_gammaT_samples$beta, "[[",i), probs = c(0.05,0.95))
+}
+# genes characterized by 0.9-level credible intervals not including zero
+sign_coeff <- matrix(0, nrow(beta_gammaT_mean$beta), ncol(beta_gammaT_mean$beta))
+sign_coeff[which(apply(Q.mat, 1, function(x) prod(x)) > 0)] <- 1
+# covariate names
+colnames(beta_gammaT_mean$beta) <- covariates_names <- c("Genes-specific intercept", "Number of genes", "Total count per cell")
+# summary results
+data.frame("covariate" = covariates_names,
+           "min" = apply(beta_gammaT_mean$beta, 2, min),
+           "Q0.25" = apply(beta_gammaT_mean$beta, 2, function(var) quantile(var, 0.25)),
+           "Q0.50" = apply(beta_gammaT_mean$beta, 2, function(var) quantile(var, 0.50)),
+           "Q0.75" = apply(beta_gammaT_mean$beta, 2, function(var) quantile(var, 0.75)),
+           "max" = apply(beta_gammaT_mean$beta, 2, max),
+           "0.9-level" = colSums(sign_coeff))
+```
+
+The next figure displays the posterior distributions of the $\Gamma_T$ coefficients, illustrating the influence of meta-covariates on the covariate effects.
+```{r}
+# computing credible intervals for technical metacovariate coefficient
+npar_gammaT <- nrow(beta_gammaT_mean$gammaT) * ncol(beta_gammaT_mean$gammaT)
+Q.mat_met <- matrix(NA, npar_gammaT, 2)
+for(i in 1:npar_gammaT) {
+  Q.mat_met[i,] <- quantile(sapply(beta_gammaT_samples$gammaT, "[[",i), probs = c(0.1,0.9))
+}
+par(mfrow=c(1,3), mar=c(0.5,3.5,2.5,0.5))
+for(i in 1:3) {
+  plot(1,1, pch = "", xlim = c(0.1,2.9), ylim = c(-0.1, 0.1),
+       axes = FALSE, xlab = "", ylab="")
+  grid(nx=3, ny=8)
+  datatoplot <- cbind(sapply(beta_gammaT_samples$gammaT, "[[",2+3*(i-1)),
+                      sapply(beta_gammaT_samples$gammaT, "[[",3+3*(i-1)))
+  boxplot(datatoplot,  col = c(unipdred,mybeige),
+          add = TRUE, axes = FALSE, pch = 20)
+  axis(2, tick = FALSE, las =1)
+  abline(h = 0, lwd = 2)
+  title(main = covariates_names[i])
+  if(i==2) {
+    legend("bottom", legend = c("Length", "GC content"),
+           fill = c(unipdred,mybeige), cex=1.25, pt.cex = 2,
+           bg = "white", horiz = TRUE, #inset = -1/20,
+           bty="n")
+  }
+}
+```
+
+We plot density and pair plots of the scores of the first five latent factors of a representative posterior draw, that the draw with maximum log-likelihood. Cell points are coloured according to the cell type.
+```{r}
+# check the order of the factors with respect to frobenious of contribution
+f_norm <- rep(NA, ncol(lpost_mode$eta_max))
+for(h in 1:ncol(lpost_mode$eta_max)){
+  f_norm[h] <- norm(tcrossprod(lpost_mode$eta_max[,h], lpost_mode$lambda_max[,h]), type = "F")
+}
+factor_order <- order(f_norm, decreasing = TRUE) # most relevant: 31, 22, 4, 29, 26, 19, 11, 13, 7, 17
+# reorder factors and loadings
+eta_hat <- lpost_mode$eta_max[,factor_order]
+lambda_hat <- lpost_mode$lambda_max[,factor_order]
+# switch sign of third and fourth factor
+eta_hat[,3:4] <- -eta_hat[,3:4]
+lambda_hat[,3:4] <- -lambda_hat[,3:4]
+# plot of factors
+factors_toplot <- data.frame(Factor_1 = eta_hat[,1],
+                             Factor_2 = eta_hat[,2],
+                             Factor_3 = eta_hat[,3],
+                             Factor_4 = eta_hat[,4],
+                             Factor_5 = eta_hat[,5],
+                             Cell_Type = factor(celltype))
+# subsample points for each cell type (for viz purposes)
+tokeep <- NULL
+for(i in 1:length(levels(celltype))){
+  wh_lev <-  which(celltype==levels(celltype)[i])
+  selected <- sample(wh_lev, min(20*sqrt(length(wh_lev)),length(wh_lev)), replace = FALSE)
+  tokeep <- c(tokeep, selected)
+}
+factors_toplot <- factors_toplot[tokeep,]
+my_dens <- function(data, mapping, ...) {
+  ggplot(data = data, mapping=mapping) +
+    geom_density(..., alpha = 0, fill = NA, lwd = 1)
+}
+
+# let's give the norm order name to factors
+ggpairs(factors_toplot, columns = c(1:5), aes(colour = Cell_Type),
+        lower = list(continuous = wrap("points", alpha = 0.75, size =0.75)),
+        upper = list(continuous = wrap("points", alpha = 0.75, size =0.75)),
+        diag = list(continuous = my_dens),
+        legend = 1,
+        columnLabels = c("Factor 1", "Factor 2","Factor 3", "Factor 4", "Factor 5")) +
+  scale_color_manual("Cell type", values = c(unipdred, myavion,  mygold,
+                                             mygrey, mygreen, mybeige, mydarkblue,
+                                             mypink)) +
+  theme_minimal() +
+  theme(legend.position = "bottom", strip.text = element_text(size = 14),
+        legend.text = element_text(size= 14),
+        legend.title = element_text(size= 14))
+```
+
+We report barplots of the loadings and biological meta-covariate coefficients $\gamma_B$ of the first five factors of a representative posterior draw. The grey vertical lines on the loading barplots delimit the genes associated to the pathways highlighted in the corresponding $\gamma$ barplots. 
+```{r}
+# order pathways with respect to Gamma
+gammaB_hat <- lpost_mode$gammaB_max[, factor_order] 
+
+data_hm <- data.frame(ind = 1:nrow(lambda_hat), y = 1, lambda_hat[,1:5])
+data_bp <- data.frame(Pathways = colnames(wB), gammaB_hat[-1,1:5])
+data_bp$Pathways <- factor(data_bp$Pathways, levels = colnames(wB))
+
+# Factor 1
+g1_hm <- ggplot(data_hm, aes(x = ind, y =  abs(X1)^(1/2), fill= X1)) +
+  geom_bar(stat = "identity")+
+  theme_void()+
+  xlab("Genes")+
+  scale_fill_gradient2(expression(lambda[1]), low = mygold, mid = "white" , high = unipdred )+
+  scale_x_continuous(expand = c(0.01, 0.01)) +  # Remove margin on x-axis
+  scale_y_continuous(expand = c(0.01, 0.01))+
+  ggtitle("Loadings - Factor 1")+
+  theme(axis.line.x = element_line(linewidth = 1, colour = mygrey),
+        axis.title.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.margin = margin(0,0,0,0,"pt"),
+        title = element_text(size = 15),
+        axis.text.x = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.position = "left",
+        legend.title = element_text(size = 20))
+g1_bp <- ggplot(data = data_bp, mapping = aes(x = Pathways, y = X1, fill = X1)) +
+    geom_bar(stat="identity",  col = mygrey)+
+  scale_fill_gradientn(colours=c("white","grey95", "grey90",  "grey80",  "grey60", "grey40" ) )+
+  theme_minimal()+
+  ylab(expression(gamma[1]))+
+  theme(axis.text.x= element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major.x = element_blank())
+ggarrange(g1_hm, g1_bp, ncol = 1, nrow = 2)
+
+# Factor 2
+# order by NOD pathway (7)
+pw <- 7
+pw_ind <- which(wB[,pw]==1)
+n_tmp <- sum(wB[,pw]!=1)
+new_order <- c(which(wB[,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+               which(wB[,pw]!=1)[(floor(n_tmp/23)*(pw-1)+1):n_tmp ])
+data_hm_tmp <- data_hm[new_order,]
+data_hm_tmp$ind <- 1:nrow(lambda_hat)
+# ggplot
+g2_hm <- ggplot(data_hm_tmp, aes(x = ind, y =  abs(X2)^0.5, fill= X2)) +
+  geom_bar(stat = "identity")+
+  theme_void() +
+  xlab("Genes") +
+  scale_fill_gradient2(expression(lambda[2]), low = mygold, mid = "white" , high = unipdred )+
+  scale_x_continuous(expand = c(0.01, 0.01)) +  # Remove margin on x-axis
+  scale_y_continuous(expand = c(0.01, 0.01))+
+  geom_vline(xintercept =  c((floor(n_tmp/23)*(pw-1)), (floor(n_tmp/23)*(pw-1))+length(pw_ind)),
+             col = mygrey, linewidth = 1)+
+  ggtitle("Loadings - Factor 2")+
+  theme(
+        axis.title.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15),
+        legend.position = "left",
+        legend.title = element_text(size = 20),
+        axis.line.x = element_line(linewidth = 1, colour = mygrey))
+g2_bp <- ggplot(data = data_bp, mapping = aes(x = Pathways, y = X2, fill = X2)) +
+  geom_bar(stat="identity", col = mygrey)+
+  scale_fill_gradientn(colours=c("white","grey95", "grey90",  "grey80",  "grey60", "grey40" ) )+
+  theme_minimal()+
+  ylab(expression(gamma[2]))+
+  theme(axis.text.x= element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major.x = element_blank())
+ggarrange(g2_hm, g2_bp, ncol = 1, nrow = 2)
+
+# Factor 3
+# order by Natural Killers (7)
+pw <- 11
+pw_ind <- which(wB[,pw]==1)
+n_tmp <- sum(wB[,pw]!=1)
+new_order <- c(which(wB[,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+              which(wB[,pw]!=1)[(floor(n_tmp /23)*(pw-1)+1):n_tmp ])
+data_hm_tmp <- data_hm[new_order,]
+data_hm_tmp$ind <- 1:nrow(lambda_hat)
+# ggplot
+g3_hm <- ggplot(data_hm_tmp, aes(x = ind, y =  abs(X3)^0.5, fill= X3)) +
+  geom_bar(stat ="identity")+
+  theme_void()+
+  xlab("Genes")+
+  scale_fill_gradient2(expression(lambda[3]),low = mygold, mid = "white" , high = unipdred )+
+  scale_x_continuous(expand = c(0.01, 0.01)) +  # Remove margin on x-axis
+  scale_y_continuous(expand = c(0.01, 0.01))+
+  geom_vline(xintercept =  c((floor(n_tmp /23)*(pw-1)),
+                             (floor(n_tmp /23)*(pw-1))+length(pw_ind)), col = mygrey,
+             linewidth = 1)+
+  ggtitle("Loadings - Factor 3")+
+  theme(axis.title.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        title = element_text(size =15),
+        legend.position = "left",
+        legend.title = element_text(size=20),
+        axis.line.x = element_line(linewidth = 1, colour = mygrey))
+g3_bp <- ggplot(data = data_bp, mapping = aes(x = Pathways, y = X3, fill = X3)) +
+  geom_bar(stat="identity", col = mygrey)+
+  scale_fill_gradientn(colours=c("white","grey95", "grey90",  "grey80",  "grey60", "grey40" ) )+
+  theme_minimal()+
+  ylab(expression(gamma[3]))+
+  theme(axis.text.x= element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major.x = element_blank())
+ggarrange(g3_hm, g3_bp, ncol = 1, nrow = 2)
+
+# Factor 4
+# order by antigen processing and presentation
+pw <- 4
+pw_ind <- which(wB[,pw]==1)
+n_tmp <- sum(wB[,pw]!=1)
+new_order <- c(which(wB[,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+              which(wB[,pw]!=1)[(floor(n_tmp /23)*(pw-1)+1):n_tmp ])
+data_hm_tmp <- data_hm[new_order,]
+data_hm_tmp$ind <- 1:nrow(lambda_hat)
+# ggplot
+g4_hm <- ggplot(data_hm_tmp, aes(x = ind, y =  abs(X4)^0.5, fill= X4)) +
+  geom_bar(stat = "identity")+
+  theme_void()+
+  xlab("Genes")+
+  scale_fill_gradient2(expression(lambda[4]),low = mygold, mid = "white" , high = unipdred )+
+  scale_x_continuous(expand = c(0.01, 0.01)) +  # Remove margin on x-axis
+  scale_y_continuous(expand = c(0.01, 0.01))+
+  geom_vline(xintercept =  c((floor(n_tmp /23)*(pw-1)),
+                             (floor(n_tmp /23)*(pw-1))+length(pw_ind)), col = mygrey,
+             lwd = 1)+
+  ggtitle("Loadings - Factor 4")+
+  theme(axis.title.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15),
+        legend.position = "left",
+        legend.title =element_text(size = 20),
+        axis.line.x = element_line(linewidth = 1, colour = mygrey))
+g4_bp <- ggplot(data = data_bp, mapping = aes(x = Pathways, y = X4, fill = X4)) +
+  geom_bar(stat="identity", col =mygrey)+
+  scale_fill_gradientn(colours=c("white","grey95", "grey90",  "grey80",  "grey60", "grey40" ) )+
+  theme_minimal()+
+  ylab(expression(gamma[4]))+
+  theme(axis.text.x= element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major.x = element_blank())
+ggarrange(g4_hm, g4_bp, ncol = 1, nrow = 2)
+
+# Factor 5
+# order by T cell receptor signaling (for inverse relation, T-cell receptor underexpressed)
+pw = 15
+pw_ind <- which(wB[,pw]==1)
+n_tmp <- sum(wB[,pw]!=1)
+new_order <- c(which(wB[,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+              which(wB[,pw]!=1)[(floor(n_tmp /23)*(pw-1)+1):n_tmp ])
+data_hm_tmp <- data_hm[new_order,]
+data_hm_tmp$ind <- 1:nrow(lambda_hat)
+# ggplot
+g5_hm <- ggplot(data_hm_tmp, aes(x = ind, y =  abs(X5)^(1/2), fill= X5)) +
+  geom_bar(stat = "identity")+
+  theme_void()+
+  xlab("Genes")+
+  scale_fill_gradient2(expression(lambda[5]),low = mygold, mid = "white" , high = unipdred )+
+  scale_x_continuous(expand = c(0.01, 0.01)) +  # Remove margin on x-axis
+  scale_y_continuous(expand = c(0.01, 0.01))+
+  geom_vline(xintercept =  c((floor(n_tmp /23)*(pw-1)),
+                             (floor(n_tmp /23)*(pw-1))+length(pw_ind)), col = mygrey,
+             lwd = 1.5)+
+  theme(axis.title.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x = element_text(size = 15),
+        axis.title.x = element_text(size = 20),
+        legend.text = element_text(size = 15),
+        legend.position = "left",
+        legend.title = element_text(size = 20),
+        axis.line.x = element_line(linewidth = 1, colour = mygrey))
+g5_bp <- ggplot(data = data_bp, mapping = aes(x = Pathways, y = X5, fill = X5)) +
+  geom_bar(stat="identity", col = mygrey)+
+  scale_fill_gradientn(colours=c("white","grey95", "grey90",  "grey80",  "grey60", "grey40" ) )+
+  theme_minimal()+
+  ylab(expression(gamma[5]))+
+  theme(axis.text.x= element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major.x = element_blank())
+ggarrange(g5_hm, g5_bp, ncol = 1, nrow = 2)
+```
+
+We focus now on the results obtained thanks to the innovative treatment of the residual term allowed by `COSIN`. The rank-one contributions $C_h$ allow one to decompose the underlying signal in rank-one additive matrices which aid interpretation. We plot below the estimated $C_1$, $C_2$, $C_3$, $C_4$ and $C_5$: to facilitate interpretation, we re-arranged the row order according to cell lines and the column order according to different pathways for each contribution.
+```{r}
+# reduce dimensionality sampling random cells.
+# for viz purposes
+# subsample points for each cell type
+tokeep <- NULL
+for(i in 1:length(levels(celltype))){
+  wh_lev <-  which(celltype==levels(celltype)[i])
+  selected <- sample(wh_lev, min(20*sqrt(length(wh_lev)),length(wh_lev)), replace = FALSE)
+  tokeep <- c(tokeep, selected)
+}
+# sumbsample void genes
+toremove <- sample(length(which(rowSums(lambda_hat[,1:5]>0)==0)),1000)
+# rows ordered by celltype
+cells_order <- order(as.numeric(celltype[tokeep]))
+cells_linebreak <- which(diff(as.numeric(celltype[tokeep])[cells_order]) > 0) + 0.5
+cells_linebreak <- c(cells_linebreak, cells_linebreak[length(cells_linebreak)] + table(celltype[tokeep])[length(table(celltype[tokeep]))])
+
+# Contribution 1
+c_toplot <- contribution_means[[1]][tokeep,-toremove]
+col_breaks2 <- c(quantile(c_toplot, probs = 0.0001),
+                 seq(quantile(c_toplot, probs = 0.01),
+                     quantile(c_toplot, probs = 0.99),
+                     length = 10),
+                 quantile(c_toplot, probs = 0.9999))
+par(mar=c(0.2,0.2,0.2,0.2))
+imagePlot(1:ncol(c_toplot), 1:nrow(c_toplot),
+      t(c_toplot), xlab = "", useRaster = TRUE,
+      breaks = col_breaks2,
+      ylab = "", col = funcColor(11), axes = FALSE,
+      horizontal = TRUE, legend.shrink = 0.25, legend.width = 0.5)
+abline(h = cells_linebreak, lwd =4, col = mygrey)
+
+# Contribution 2
+# order by NOD pathway (7)
+pw <- 7
+pw_ind <- which(wB[-toremove,pw]==1)
+n_tmp <- sum(wB[-toremove,pw]!=1)
+new_order <- c(which(wB[-toremove,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+              which(wB[-toremove,pw]!=1)[(floor(n_tmp/23)*(pw-1)+1):n_tmp ])
+path_linebreak = c((floor(n_tmp /23)*(pw-1)), (floor(n_tmp /23)*(pw-1))+length(pw_ind))
+c_toplot <- contribution_means[[2]][tokeep,-toremove]
+c_toplot <- c_toplot[,new_order]
+col_breaks2 <- c(quantile(c_toplot, probs = 0.0001),
+                 seq(quantile(c_toplot, probs = 0.01),
+                     quantile(c_toplot, probs = 0.99),
+                     length = 10),
+                 quantile(c_toplot, probs = 0.9999))
+par(mar=c(0.2,0.2,0.2,0.2))
+imagePlot(1:ncol(c_toplot), 1:nrow(c_toplot),
+          t(c_toplot), xlab = "", useRaster = TRUE,
+          breaks = col_breaks2,
+          ylab = "", col = funcColor(11), axes = FALSE,
+          horizontal = TRUE, legend.shrink = 0.25, legend.width = 0.5)
+abline(h = cells_linebreak, lwd =4, col = mygrey)
+abline(v =  path_linebreak, lwd =4, col = mygrey)
+
+# Contribution 3
+# order by Natural Killers (11)
+pw <- 11
+pw_ind <- which(wB[-toremove,pw]==1)
+n_tmp <- sum(wB[-toremove,pw]!=1)
+new_order <- c(which(wB[-toremove,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+               which(wB[-toremove,pw]!=1)[(floor(n_tmp/23)*(pw-1)+1):n_tmp ])
+path_linebreak <- c((floor(n_tmp /23)*(pw-1)), (floor(n_tmp /23)*(pw-1))+length(pw_ind))
+c_toplot <- contribution_means[[3]][tokeep,-toremove]
+c_toplot <- c_toplot[,new_order]
+col_breaks2 <- c(quantile(c_toplot, probs = 0.0001),
+                 seq(quantile(c_toplot, probs = 0.01),
+                     quantile(c_toplot, probs = 0.99),
+                     length = 10),
+                 quantile(c_toplot, probs = 0.9999))
+par(mar=c(0.2,0.2,0.2,0.2))
+imagePlot(1:ncol(c_toplot), 1:nrow(c_toplot),
+          t(c_toplot), xlab = "", useRaster = TRUE,
+          breaks = col_breaks2,
+          ylab = "", col = funcColor(11), axes = FALSE,
+          horizontal = TRUE, legend.shrink = 0.25, legend.width = 0.5)
+abline(h = cells_linebreak, lwd =4, col = mygrey)
+abline(v =  path_linebreak, lwd =4, col = mygrey)
+
+# Contribution 4
+# order by Antigen (4)
+pw <- 4
+pw_ind <- which(wB[-toremove,pw]==1)
+n_tmp <- sum(wB[-toremove,pw]!=1)
+new_order <- c(which(wB[-toremove,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+               which(wB[-toremove,pw]!=1)[(floor(n_tmp/23)*(pw-1)+1):n_tmp ])
+path_linebreak <- c((floor(n_tmp /23)*(pw-1)), (floor(n_tmp /23)*(pw-1))+length(pw_ind))
+c_toplot <- contribution_means[[4]][tokeep,-toremove]
+c_toplot <- c_toplot[,new_order]
+col_breaks2 <- c(quantile(c_toplot, probs = 0.0001),
+                 seq(quantile(c_toplot, probs = 0.01),
+                     quantile(c_toplot, probs = 0.99),
+                     length = 10),
+                 quantile(c_toplot, probs = 0.9999))
+par(mar=c(0.2,0.2,0.2,0.2))
+imagePlot(1:ncol(c_toplot), 1:nrow(c_toplot),
+          t(c_toplot), xlab = "", useRaster = TRUE,
+          breaks = col_breaks2,
+          ylab = "", col = funcColor(11), axes = FALSE,
+          horizontal = TRUE, legend.shrink = 0.25, legend.width = 0.5)
+abline(h = cells_linebreak, lwd =4, col = mygrey)
+abline(v =  path_linebreak, lwd =4, col = mygrey)
+
+# Contribution 5
+# order by T-cell (15)
+pw <- 15
+pw_ind <- which(wB[-toremove,pw]==1)
+n_tmp <- sum(wB[-toremove,pw]!=1)
+new_order <- c(which(wB[-toremove,pw]!=1)[1:(floor(n_tmp/23)*(pw-1))], pw_ind,
+               which(wB[-toremove,pw]!=1)[(floor(n_tmp/23)*(pw-1)+1):n_tmp ])
+path_linebreak <- c((floor(n_tmp /23)*(pw-1)), (floor(n_tmp /23)*(pw-1))+length(pw_ind))
+c_toplot <- contribution_means[[5]][tokeep,-toremove]
+c_toplot <- c_toplot[,new_order]
+col_breaks2 <- c(quantile(c_toplot, probs = 0.0001),
+                 seq(quantile(c_toplot, probs = 0.01),
+                     quantile(c_toplot, probs = 0.99),
+                     length = 10),
+                 quantile(c_toplot, probs = 0.9999))
+par(mar=c(0.2,0.2,0.2,0.2))
+imagePlot(1:ncol(c_toplot), 1:nrow(c_toplot),
+          t(c_toplot), xlab = "", useRaster = TRUE,
+          breaks = col_breaks2,
+          ylab = "", col = funcColor(11), axes = FALSE,
+          horizontal = TRUE, legend.shrink = 0.25, legend.width = 0.5)
+abline(h = cells_linebreak, lwd =4, col = mygrey)
+abline(v =  path_linebreak, lwd =4, col = mygrey)
+```
+
+Finally, we construct two graphs from the posterior mean of the inverse of the sparse covariance matrix $\Omega = \Lambda\Lambda^\top+\Sigma$, i.e. the partial correlation matrix.
+In the first one, edge thicknesses are proportional to the latent partial correlations between genes. Values below 0.025 are not reported. Nodes are positioned using a Fruchterman-Reingold force-direct algorithm and coloured according to the pathways the genes belong to.
+```{r}
+threshold = 0.025
+# dropping all the rows with no partial correlation higher than threshold
+{
+  pcorr_postmean_cutted = pcorr_mean$omega_pcorr
+  colnames(pcorr_postmean_cutted) = colnames(y)
+  pcorr_postmean_cutted[which(abs(pcorr_mean$omega_pcorr)<threshold)] = 0
+  td = which(rowSums(abs(pcorr_postmean_cutted)>0)==1)
+  pcorr_postmean_cutted = pcorr_postmean_cutted[-td,-td]
+}
+network <- graph_from_adjacency_matrix(pcorr_postmean_cutted,
+                                       weighted = TRUE,
+                                       mode = "undirected",
+                                       diag = FALSE)
+# network
+net <- network(sqrt(abs(pcorr_postmean_cutted))*10,
+               ignore.eval = FALSE,
+               names.eval = "weights")
+# Platelet activation
+rel_path <- c(3,1,12,7,11,4,15)
+# genes with more than one pathway are not coloured
+n_path <- rowSums( matrix(as.numeric(as.matrix(wB)), nrow = ncol(y)))
+pathway <- rep("Other", ncol(y))
+for(m in rel_path){
+  w_path <- which((wB[,m]=="1"))
+  pathway[w_path] <-  gsub("_", " ", colnames(wB)[m])
+}
+# assign a variable for colors
+net %v% "Pathway" <- pathway[-td]
+net %v% "size" <- rowSums(abs(pcorr_postmean_cutted))*10
+net %e% "weight" <- sqrt(abs(pcorr_postmean_cutted))*10
+#label only highly correlated genes
+labels <- rep("", nrow(pcorr_postmean_cutted))
+selected_labels <- order(rowSums(abs(pcorr_postmean_cutted)), decreasing = TRUE)[1:10]
+labels[selected_labels] <- colnames(pcorr_postmean_cutted)[selected_labels]
+# convert into real names
+labels[selected_labels] <- c("S100A8", "ALAS2" ,"ACTB", "S100A9","LILRA4",
+                             "HLA-DRA", "CD8B", "PF4", "RRM2", "HLA-DRB1")
+# possibly assign a variable for size: size by connection
+set.seed(5)
+ggnet2(net, mode = "fruchtermanreingold",
+       size = "freeman",
+       max_size = 15,
+       color="Pathway",
+       alpha = 0.85,
+       color.palette= c("Antigen processing and presentation" = unipdred,
+                        "Other" = mygrey,
+                        "NOD like receptor signaling pathway" = mybeige,
+                        "T cell receptor signaling pathway" = myavion,
+                        "Natural killer cell mediated cytotoxicity" = mydarkblue,
+                        "IL 17 signaling pathway" = mygold,
+                        "Chemokine signaling pathway" = mypink,
+                        "Platelet activation" = mypurple),
+       edge.size = "weight",
+       edge.alpha = 0.25)+
+  theme(legend.title = element_text(size= 20),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(0.05, units = "cm"))+
+  geom_label_repel(aes(label = labels), box.padding = 1, color="black",
+                   size=5 ,
+                   point.padding = 0.1,  segment.color = 'black',
+                   segment.size = 0.5,
+                  max.overlaps = 40) +
+  guides(size = "none")
+```
+
+In the second one, edges are proportionally thick according to the absolute partial correlations between genes and are coloured based on the sign of the partial correlations. Values below 0.025 are not reported. Nodes are positioned using a Fruchterman-Reingold force-directed
+algorithm.
+```{r}
+net %e% "color" <- ifelse(pcorr_postmean_cutted>0, unipdred, mygold)
+# possibly assign a variable for size: size by connection
+set.seed(5)
+ggnet2(net, mode = "fruchtermanreingold",
+       size = "freeman",
+       max_size = 15,
+       color= mygrey,
+       alpha = 0.85,
+       edge.size = "weight", edge.color = "color",
+       edge.alpha = 0.25)+
+  theme(legend.position = "none") +
+  geom_label_repel(aes(label = labels), box.padding = 1, color="black",
+                   size=5 ,
+                   point.padding = 0.1,  segment.color = 'black',
+                   segment.size = 0.5,
+                   max.overlaps = 40) +
+  guides(size = "none")
+```
+
+## Cell clustering
+In conclusion, we show that our model is able the identify the cell type groups through the sparsity structure of the scores.
+Clustering is performed on all the scores identified by `COSIN` and the first 31 principal components identified by `FAST-GLM-PCA` and `PCA` on the standardised log-counts.
+Specifically, we first standardize the scores and then apply either $k$-means or the unsupervised graph-based provided by `seurat`.
+The performance of the models are evaluated in terms of Adjusted Rand Index (ARI).
+```{r}
+get_ARI <- function(groups, scores, Y, J, method = "kmeans", st = TRUE) {
+  # method = c("kmeans","seurat")
+  #     st = c(TRUE, FALSE)
+  # normalize scores
+  if (st) {
+    scores <- scale(scores)
+  }
+  # compute ARI
+  if (method == "kmeans") {
+    ARI <- pdfCluster::adj.rand.index(groups, kmeans(scores, centers = J, nstart = 10)$cluster)
+  } else {
+    Sco <- Seurat::CreateSeuratObject(counts = Y)
+    rownames(scores) <- paste0("Cell",1:nrow(scores))
+    Sco[["model"]] <- Seurat::CreateDimReducObject(embeddings = scores, key = "model_")
+    Sco <- Seurat::FindNeighbors(Sco, reduction = "model", dims = 1:ncol(scores))
+    Sco <- Seurat::FindClusters(Sco)
+    ARI <- pdfCluster::adj.rand.index(groups, Sco$seurat_clusters)
+  }
+  return(ARI)
+}
+rownames(y) <- paste0("Cell", 1:nrow(y))
+colnames(y) <- paste0("Gene", 1:ncol(y))
+# number of groups
+ngroups <- length(levels(celltype))
+# cosin
+cosin_kmeans <-    get_ARI(groups = celltype, scores = lpost_mode$eta_max, Y = t(y), J = ngroups, method = "kmeans", st = FALSE)
+cosin_seurat <-    get_ARI(groups = celltype, scores = lpost_mode$eta_max, Y = t(y), J = ngroups, method = "seurat", st = FALSE)
+# fastglmpca without covariates
+ty_clean <- t(y[,-which(colSums(y)==0)])
+fglm_pca <- fastglmpca::init_glmpca_pois(ty_clean, K = 31)
+fglm_pca <- fastglmpca::fit_glmpca_pois(ty_clean, fit0 = fglm_pca)
+fglm_pca_kmeans_st <- get_ARI(groups = celltype, scores = fglm_pca$V, Y = t(y), J = ngroups, method = "kmeans", st = TRUE)
+fglm_pca_seurat_st <- get_ARI(groups = celltype, scores = fglm_pca$V, Y = t(y), J = ngroups, method = "seurat", st = TRUE)
+# pca on log-counts
+y_log <- log((y/ rowSums(y) * 10000 + 1))
+res_pca <- pcaMethods::pca(y_log, nPcs = 31, method = "svd")
+pca_kmeans_st <- get_ARI(groups = celltype, scores = res_pca@scores, Y = t(y), J = ngroups, method = "kmeans", st = TRUE)
+pca_seurat_st <- get_ARI(groups = celltype, scores = res_pca@scores, Y = t(y), J = ngroups, method = "seurat", st = TRUE)
+# summary results
+data.frame("model" = c("cosin", "fastglmpca", "pca"),
+           "kmeans" = c(cosin_kmeans, fglm_pca_kmeans_st, pca_kmeans_st),
+           "seurat" = c(cosin_seurat, fglm_pca_seurat_st, pca_seurat_st))
+```

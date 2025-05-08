@@ -2,9 +2,10 @@
 title: "Structured factorization for single-cell gene expression data: simulations"
 author: Antonio Canale, Luisa Galtarossa, Davide Risso, Lorenzo Schiavon, Giovanni
   Toto
-date: "Last modified: June 07, 2023"
+date: "Last modified: March 21, 2025"
 output:
-  pdf_document: default
+  pdf_document: 
+    latex_engine: xelatex
   html_document:
     df_print: paged
   word_document: default
@@ -18,6 +19,17 @@ This vignette contains the code developed and used for computing the aggregated 
 
 ```{r, message=FALSE, warning=FALSE}
 library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# init color palette
+model2color <- c("cosin"= alpha("#9B0014", 0.9),
+                 "seurat"     = "#1B9E77",
+                 "pca"        = "#BF80BF",
+                 "glmpca"     = "#0093D5",
+                 "fastglmpca" = "#006BAD",
+                 "scGBM"      = "#E6AB02",
+                 "newWave"    = "#FB933C")
 ```
 
 ## Introduction
@@ -83,6 +95,19 @@ colnames_s3 <- c("n", "p", "sigma", "s", "r", "RMSE_1", "RMSE_2",
 colnames(metrics_s3) <- colnames(metrics_s3_woNA) <- colnames_s3
 ```
 
+We load the tables containing the evaluating metrics related to `PPCA`:
+
+```{r}
+# # assigning names to columns (scenario 1)
+# colnames_pca_s1 <- c("n", "p", "sigma", "r", "nPc", "MAE_a", "MAE")
+# # assigning names to columns (scenario 2)
+# colnames(metrics_pca_s2) <- c("n", "p", "sigma", "r", "nPc", "MAE_a", "MAE")
+metrics_pca_s3 <- readRDS("simulations/pca/table_metrics_pca_s3.RDS")
+colnames_pca_s3 <- c("n", "p", "sigma", "r", "nPc", "MAE_na", "MAE")
+
+colnames(metrics_pca_s3) <- colnames_pca_s3
+```
+
 We load the tables containing the evaluating metrics related to `GLM-PCA`:
 
 ```{r}
@@ -101,6 +126,7 @@ colnames_glmpca_s3 <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
                         "rmse_etaLambda", "meta")
 colnames(metrics_glmpca_s3) <- colnames(metrics_glmpca_s3_meta) <- colnames_glmpca_s3
 ```
+
 
 ## Aggregate metrics
 
@@ -126,10 +152,17 @@ metrics_s3_woNA <- as.data.frame(metrics_s3_woNA)
 metrics_s3_woNA$s <- NULL
 metrics_s3_woNA$r <- NULL
 # filtering columns
-metrics_s3_woNA <- metrics_s3_woNA[, c(1:3,4:6,16)]
+metrics_s3_woNA <- metrics_s3_woNA[, c(1:3,4:6,11,16)]
 # aggregating metrics
 metrics_s3_woNA <- metrics_s3_woNA %>% group_by(n, p, meta, sigma) %>%
   summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# ordering columns
+metrics_s3_woNA <- metrics_s3_woNA[, c(1:4, rbind(5:8, 5:8+4))]
+# changing colnames
+colnames(metrics_s3_woNA) <- colnames(metrics_s3_woNA) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
+
 ```
 
 Then, we aggregate the evaluation metrics related to `GLM-PCA` with meta-covariate applied to data sets without NAs:
@@ -140,6 +173,28 @@ metrics_glmpca_s3_meta$r <- NULL
 # aggregating metrics
 metrics_glmpca_s3_meta <- metrics_glmpca_s3_meta %>% group_by(n, p, meta, sigma) %>%
   summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# ordering columns
+metrics_glmpca_s3_meta <- metrics_glmpca_s3_meta[, c(1:4, rbind(c(5:10,12), c(5:10,12)+8))]
+# changing colnames
+colnames(metrics_glmpca_s3_meta) <- colnames(metrics_glmpca_s3_meta) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
+```
+
+Then, we aggregate the evaluation metrics related to `PPCA` applied to data sets with NAs:
+
+```{r}
+metrics_pca_s3 <- as.data.frame(metrics_pca_s3)
+metrics_pca_s3$r <- NULL
+# aggregating metrics
+metrics_pca_s3 <- metrics_pca_s3 %>% group_by(n, p, sigma) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# ordering columns
+metrics_pca_s3 <- metrics_pca_s3[, c(1:3, rbind(4:6, 4:6+3))]
+# changing colnames
+colnames(metrics_pca_s3) <- colnames(metrics_pca_s3) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
 ```
 
 Finally, we aggregate the evaluation metrics related to `GLM-PCA` without meta-covariate applied to both kinds of data set:
@@ -150,6 +205,12 @@ metrics_glmpca_s3$r <- NULL
 # aggregating metrics
 metrics_glmpca_s3 <- metrics_glmpca_s3 %>% group_by(n, p, meta, sigma) %>%
   summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# ordering columns
+metrics_glmpca_s3 <- metrics_glmpca_s3[, c(1:4, rbind(c(5:10,12), c(5:10,12)+8))]
+# changing colnames
+colnames(metrics_glmpca_s3) <- colnames(metrics_glmpca_s3) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
 ```
 
 ### Contribution RMSE computed on data sets without NAs
@@ -172,6 +233,8 @@ Median of out-of-sample MAE in 50 replicates, with varying $(n,p,\sigma)$. Inter
 ```{r}
 # COSIN
 round(metrics_s3[,c(1:4,15:16)], 4)
+# PPCA
+round(metrics_pca_s3[,c(1:3,5,8)], 4)
 # GLM-PCA without meta-covariates
 round(metrics_glmpca_s3[,c(1:4,6,14)], 4)
 ```
@@ -193,6 +256,13 @@ metrics <- as.data.frame(metrics)
 metrics$n_p_sigma_s <- paste(metrics$n, metrics$p, metrics$sigma, metrics$s, sep="_")
 metrics <- metrics[, c("meta", "n_p_sigma_s", "r", "MAE_Y")]
 
+
+metrics_pca <- readRDS("simulations/pca/table_metrics_pca_s3.RDS")
+colnames(metrics_pca) <- c("n", "p", "sigma", "r", "nPc", "MAE_na", "MAE")
+metrics_pca <- as.data.frame(metrics_pca)
+metrics_pca$n_p_sigma_s <- paste(metrics_pca$n, metrics_pca$p, metrics_pca$sigma, 3, sep="_")
+metrics_pca <- metrics_pca[, c("n_p_sigma_s", "r", "MAE_na")]
+
 metrics_glmpca <- readRDS("simulations/metrics/table_metrics_nometa_glmpca_s3.RDS")
 colnames(metrics_glmpca) <- c("n", "p", "sigma", "r", "alpha_a", "MAE_a",
                               "MAE", "RMSE_1", "RMSE_2", "RMSE_3", "RMSE_tot",
@@ -208,6 +278,7 @@ datatoplot_list <- list()
 for(scenario in scenario_list) {
   datatoplot_list[[scenario]] <- cbind(metrics[metrics$meta==0 & metrics$n_p_sigma_s==scenario,"MAE_Y"],
                                        metrics[metrics$meta==1 & metrics$n_p_sigma_s==scenario,"MAE_Y"],
+                                       metrics_pca[metrics_pca$n_p_sigma_s==scenario,"MAE_na"],
                                        metrics_glmpca[metrics_glmpca$n_p_sigma_s==scenario,"MAE_a"])
 }
 
@@ -217,7 +288,7 @@ scenario_titles <- list("50_100_1_3" = "(n,p) = (50,100)",
 
 unipdred <- scales::alpha("#9B0014", 0.9)
 mybeige <- scales::alpha("#e1cd9d", 0.9)
-mygrey <- scales::alpha("#5e5a55", 0.9) 
+mygrey <- scales::alpha("#5e5a55", 0.9)
 
 par(mfrow=c(1,3), mar=c(3,4.5,3,0), xpd = FALSE)
 for(scenario in scenario_list) {
@@ -225,32 +296,160 @@ for(scenario in scenario_list) {
   datatoplot <- as.data.frame(datatoplot_list[[scenario]])
   # plot settings
   if(scenario == "50_100_1_3"){
-    plot(1, 1, pch = "", xlim = c(0.2,3.8), ylim = c(0, 17.5),
+    plot(1, 1, pch = "", xlim = c(0.2,4.8), ylim = c(0, 17.5),
          axes = FALSE, xlab = "", ylab="MAE", cex.lab=1.5)
   }else{
-    plot(1, 1, pch = "", xlim = c(0.2,3.8), ylim = c(0, 17.5),
+    plot(1, 1, pch = "", xlim = c(0.2,4.8), ylim = c(0, 17.5),
          axes = FALSE, xlab = "", ylab="")
   }
   par(xpd = FALSE)
   grid(nx = 4, ny = 7)
   # boxplot
-  par(xpd=T)
-  boxplot(datatoplot,  col = c( mybeige, unipdred, mygrey), 
+  par(xpd = TRUE)
+  boxplot(datatoplot, col = c( mybeige, unipdred, "lightgrey", mygrey),
           add = TRUE, axes = FALSE, pch = 20)
   #axis(1, at = c(1, 2, 3), labels = c("COSIN","COSIN2", "GLMPCA"), cex.axis = 1.5, tick = FALSE)
   axis(2, tick = FALSE, las = 1, cex.axis=1.5)
   #abline(h = 0, lwd = 2)
   title(main = scenario_titles[[scenario]], cex.main=1.5, font.main = 1)
   if(scenario =="200_1000_1_3"){
-     par(xpd=T)
-     legend("bottomright", legend = c("COSIN w/o mc","COSIN mc", "GLM-PCA"),
-            fill = c(mybeige, unipdred, mygrey), cex=1.5, pt.cex = 2,
+     par(xpd = TRUE)
+     legend("bottomright", legend = c("COSIN w/o mc","COSIN mc", "PPCA", "GLM-PCA"),
+            fill = c(mybeige, unipdred, "lightgrey", mygrey), cex=1.5, pt.cex = 2,
             bg = "white", horiz =F, inset = -0.05, bty="n")
   }
 }
 ```
 
 
+## Additional simulations: clustering of cells
+We consider an additional scenario in which cells are grouped in $G$ groups.
+We evaluate in terms of Adjusted Rand Index (ARI) the ability of cosin in retrieving the true cell groups, and compare it with other state-of-the-art approaches.
 
+To generate the matrix of gene expression, we consider the same zero mean data generating process,
 
+$$
+y_{ij} = \lfloor \exp(z_{ij}) \rfloor, \quad  z_{ij} = \sum_h C_{hij} + \varepsilon_{ij}, \quad \varepsilon_{ij} \sim N(0,\sigma^2).
+$$
+As in scenario 3 in the previous simulations, we consider three rank-one contributions,
+```{=tex}
+\begin{align*}
+    \eta_{\cdot1}, \eta_{\cdot 3} &\sim N_n(\mu_{g1},I_n), \quad \lambda_{\cdot1}, \lambda_{\cdot2} \sim N_p(\mu_{g3},I_p),\\
+    \eta_{i2} &\sim N(0,0.05^2), \quad i> n/2,  \quad \eta_{l2}=1, \quad l \leq n/2,\\
+    \lambda_{j3} &\sim N_p(0,0.05^2), \quad j> p/2,  \quad \lambda_{m3}=1, \quad m \leq p/2,
+\end{align*}
+```
+where cell $i$ belongs to group $g=1,\ldots,G$,a nd the group means $\mu_{gh}$ are sampled from $N(0,3^2)$.
 
+```{r}
+# loading metric tables
+metrics <- readRDS("simulations/clustering/table_metric_clustering_kmeans.RDS")
+metrics <- as.data.frame(metrics)
+colnames(metrics) <- c("n", "p", "sigma", "J", "s", "r", "sim$k", "K", "cosin",
+                       "pca_K", "glmpca_K", "fastglmpca_K", "scGBM_K", "newWave_K",
+                       "pca", "glmpca", "fastglmpca", "scGBM", "newWave")
+# incorrect number of factors
+metrics_K <- metrics[,c("n", "p", "sigma", "J", "cosin", "pca_K", "glmpca_K", "fastglmpca_K", "scGBM_K", "newWave_K")]
+colnames(metrics_K) <- c("n", "p", "sigma", "J", "cosin", "pca", "glmpca", "fastglmpca", "scGBM", "newWave")
+# correct number of factors
+metrics_simk <- metrics[,c("n", "p", "sigma", "J", "cosin", "pca", "glmpca", "fastglmpca", "scGBM", "newWave")]
+```
+
+`COSIN` does not require pre-specification of the number of latent dimensions, while competing methods necessitate setting the number of latent factors.
+
+We consider a first setting in which the number of latent dimensions is known.
+```{r}
+metrics <- metrics_summ <- metrics_simk
+# replace NAs with -1
+metrics_summ[is.na(metrics_summ)] <- -1
+
+# aggregating metrics
+metrics_summ <- metrics_summ %>% group_by(n, p, sigma, J) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# renaming columns
+colnames(metrics_summ) <- colnames(metrics_summ) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
+# table
+metrics_summ
+
+# ggplot
+metrics$np_J <- paste(metrics$n, metrics$p, metrics$J, sep = "_")
+metrics <- metrics[,c("np_J","sigma","cosin","pca","glmpca","fastglmpca","scGBM","newWave")]
+
+# reshaping the data to long format
+metrics_long <- metrics %>% pivot_longer(cols = c("cosin","pca","glmpca","fastglmpca","scGBM","newWave"),
+                                         names_to = "model", values_to = "value")
+
+metrics_long$np_J <- factor(metrics_long$np_J, levels = c("50_100_5", "200_100_5", "50_100_10", "200_100_10", "200_1000_5", "200_1000_10"))
+levels(metrics_long$np_J) <- c("n = 50, p = 100, J = 5",
+                               "n = 200, p = 100, J = 5",
+                               "n = 50, p = 100, J = 10",
+                               "n = 200, p = 100, J = 10",
+                               "n = 200, p = 1000, J = 5",
+                               "n = 200, p = 1000, J = 10")
+
+metrics_long$sigma <- factor(metrics_long$sigma, levels = c(0.1,1.0))
+levels(metrics_long$sigma) <- paste0("σ = ", levels(metrics_long$sigma))
+
+# count missing values
+print(metrics_long %>% group_by(model, np_J, sigma) %>% summarise(missing_count = sum(is.na(value)), .groups = "drop"), n = 100)
+
+# creating ggplot
+ggplot(metrics_long, aes(x = sigma, y = value, fill = model)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ np_J, scales = "free", ncol = 2) +
+  scale_fill_manual(values = model2color) +
+  scale_y_continuous(position = "left", breaks = seq(-0.25, 1, by = 0.25)) +
+  coord_cartesian(ylim = c(-0.2, 1)) +
+  theme_bw() +
+  theme(legend.position="bottom", legend.box = "horizontal") +
+  guides(fill = guide_legend(nrow = 1)) +
+  labs(title = "Correct specification of number of latent factors", x = "sigma", y = "ARI", fill = "")
+```
+
+We consider a second setting in which the number of latent dimensions must be identified. We set it as the number of principal components required to explain 90% of the variability in log-transformed counts.
+```{r}
+metrics <- metrics_summ <- metrics_K
+# replace NAs with -1
+metrics_summ[is.na(metrics_summ)] <- -1
+
+# aggregating metrics
+metrics_summ <- metrics_summ %>% group_by(n, p, sigma, J) %>%
+  summarise_all(.funs = c("median" = median, "IQR" = IQR))
+# renaming columns
+colnames(metrics_summ) <- colnames(metrics_summ) %>%
+  stringr::str_replace_all("_median", " median") %>%
+  stringr::str_replace("_IQR", " IQR")
+# table
+metrics_summ
+
+# ggplot
+metrics$np_J <- paste(metrics$n, metrics$p, metrics$J, sep = "_")
+metrics <- metrics[,c("np_J","sigma","cosin","pca","glmpca","fastglmpca","scGBM","newWave")]
+# reshaping the data to long format
+metrics_long <- metrics %>% pivot_longer(cols = c("cosin","pca","glmpca","fastglmpca","scGBM","newWave"),
+                                         names_to = "model", values_to = "value")
+metrics_long$np_J <- factor(metrics_long$np_J, levels = c("50_100_5", "200_100_5", "50_100_10", "200_100_10", "200_1000_5", "200_1000_10"))
+levels(metrics_long$np_J) <- c("n = 50, p = 100, J = 5",
+                               "n = 200, p = 100, J = 5",
+                               "n = 50, p = 100, J = 10",
+                               "n = 200, p = 100, J = 10",
+                               "n = 200, p = 1000, J = 5",
+                               "n = 200, p = 1000, J = 10")
+metrics_long$sigma <- factor(metrics_long$sigma, levels = c(0.1,1.0))
+levels(metrics_long$sigma) <- paste0("σ = ", levels(metrics_long$sigma))
+# count missing values
+print(metrics_long %>% group_by(model, np_J, sigma) %>% summarise(missing_count = sum(is.na(value)), .groups = "drop"), n = 100)
+# creating ggplot
+ggplot(metrics_long, aes(x = sigma, y = value, fill = model)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ np_J, scales = "free", ncol = 2) +
+  scale_fill_manual(values = model2color) +
+  scale_y_continuous(position = "left", breaks = seq(-0.25, 1, by = 0.25)) +
+  coord_cartesian(ylim = c(-0.2, 1)) +
+  theme_bw() +
+  theme(legend.position="bottom", legend.box = "horizontal") +
+  guides(fill = guide_legend(nrow = 1)) +
+  labs(title = "Incorrect specification of number of latent factors", x = "sigma", y = "ARI", fill = "")
+```
